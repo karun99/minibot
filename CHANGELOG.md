@@ -34,6 +34,17 @@ semantic.
   slowly cheers up. Baseline per-hour rates are unchanged at the extremes the
   old model already handled.
 
+### Fixed
+
+- Unreachable-Ollama messages now always start with `cannot reach Ollama`,
+  including timeouts — on Windows a closed port surfaces as a timeout rather
+  than a refusal, which previously produced a different (and confusing) line in
+  `minibot doctor`.
+- Stats chart glyphs fall back to ASCII when stdout is not UTF-8 (`MINIBOT_ASCII`
+  or a non-UTF-8 console such as a Windows code page).
+- Tests assert the containment *invariant* for symlink escapes on Windows,
+  where `linkdir/..` resolves lexically instead of following the symlink.
+
 ## [1.0.0] - 2026-10-24
 
 Initial release: Ollama tool-calling loop, pet state with time-based decay,

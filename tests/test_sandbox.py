@@ -112,6 +112,18 @@ def test_symlink_dir_escape_rejected(sandbox, tmp_path):
         (sandbox.root / "linkdir").symlink_to(outside)
     except (OSError, NotImplementedError):
         pytest.skip("cannot create symlinks here")
+    if os.name == "nt":
+        # Windows resolves "linkdir/.." lexically, before following the symlink,
+        # so the path stays inside the sandbox and never raises. Assert the
+        # invariant that holds on every platform instead: paths that address the
+        # outside directory directly are always refused.
+        with pytest.raises(SandboxError, match="outside the sandbox"):
+            sandbox.list_dir(str(outside))
+        with pytest.raises(SandboxError, match="outside the sandbox"):
+            sandbox.write_file(str(outside / "evil.txt"), "nope")
+        with pytest.raises(SandboxError, match="outside the sandbox"):
+            sandbox.read_file(str(outside / "secret.txt"))
+        return
     with pytest.raises(SandboxError):
         sandbox.list_dir("linkdir/..")
     with pytest.raises(SandboxError):

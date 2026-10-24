@@ -74,12 +74,12 @@ class OllamaClient:
             reason = getattr(e, "reason", e)
             if isinstance(reason, (TimeoutError, socket.timeout)):
                 raise OllamaUnreachable(
-                    f"Ollama at {self.base_url} timed out after {timeout}s"
+                    f"cannot reach Ollama at {self.base_url} (timed out after {timeout}s)"
                 ) from e
             raise OllamaUnreachable(f"cannot reach Ollama at {self.base_url} ({reason})") from e
         except (TimeoutError, socket.timeout) as e:
             raise OllamaUnreachable(
-                f"Ollama at {self.base_url} timed out after {timeout}s"
+                f"cannot reach Ollama at {self.base_url} (timed out after {timeout}s)"
             ) from e
         except OSError as e:
             raise OllamaUnreachable(f"cannot reach Ollama at {self.base_url} ({e})") from e

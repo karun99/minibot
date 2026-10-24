@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import sys
 import time
 
@@ -199,34 +200,48 @@ def cmd_stats(config: BotConfig, as_json: bool, points: int) -> int:
     return 0
 
 
+def _unicode_ok() -> bool:
+    """True when stdout can render block/heart glyphs (mirrors the TUI rule)."""
+    if os.environ.get("MINIBOT_ASCII"):
+        return False
+    enc = getattr(sys.stdout, "encoding", None) or ""
+    return "utf" in enc.lower()
+
+
 def _print_stats_chart(name: str, samples: list[dict], status: dict) -> None:
     print(f"{name} — last {len(samples)} samples")
     print(f"  treats in the bag: {status.get('treats', 0)}")
     if not samples:
         print("  (no samples recorded yet — the chart fills in as you interact)")
         return
+    pretty = _unicode_ok()
     width = 40
-    series = [("hunger", "H"), ("happiness", "+"), ("energy", "E"), ("health", "♥")]
-    for key, symbol in series:
-        if samples[-1][key] >= 99.5:
-            glyph = "█"
-        elif samples[-1][key] <= 0.5:
-            glyph = "·"
-        else:
-            glyph = symbol
+    glyphs = {
+        "hunger": ("█", "#"),
+        "happiness": ("+", "+"),
+        "energy": ("e", "e"),
+        "health": ("♥", "H"),
+    }
+    for key in ("hunger", "happiness", "energy", "health"):
+        glyph = glyphs[key][0 if pretty else 1]
+        if samples[-1][key] <= 0.5:
+            glyph = "·" if pretty else "."   # an empty bar reads better as a dot
         blocks = " ".join(_spark(sample[key], width, glyph) for sample in samples[-width:])
         print(f"  {key:<9} {blocks}  {status[key]:>3}")
+    arrow = "→" if pretty else "->"
     first, last = samples[0], samples[-1]
-    print(f"  trend: hunger {first['hunger']:.0f}→{last['hunger']:.0f}  "
-          f"happiness {first['happiness']:.0f}→{last['happiness']:.0f}  "
-          f"energy {first['energy']:.0f}→{last['energy']:.0f}  "
-          f"health {first['health']:.0f}→{last['health']:.0f}")
+    print(f"  trend: hunger {first['hunger']:.0f}{arrow}{last['hunger']:.0f}  "
+          f"happiness {first['happiness']:.0f}{arrow}{last['happiness']:.0f}  "
+          f"energy {first['energy']:.0f}{arrow}{last['energy']:.0f}  "
+          f"health {first['health']:.0f}{arrow}{last['health']:.0f}")
 
 
 def _spark(value: float, width: int, glyph: str) -> str:
     height = 6
     level = max(0, min(height, int(round(float(value) / 100.0 * height))))
-    return glyph * level + "·" * (height - level)
+    fill = glyph * level
+    empty = ("·" if _unicode_ok() else ".") * (height - level)
+    return fill + empty
 
 
 def cmd_history(config: BotConfig, limit: int) -> int:
