@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import os
 import sys
+import time
 
 from . import __version__
 from .checks import collect_checks, print_checks
@@ -30,11 +31,14 @@ HELP = """\
 Commands (everything else is chat for the bot):
   /help              show this help           /status | /st   detailed status
   /feed              feed the bot             /play           play with the bot
-  /rest              let the bot recharge     /ls [dir]       list sandbox files
-  /read <file>       read a sandbox file      /write <file>   write one (end with '.' line)
+  /rest              let the bot recharge     /treat          give a treat from the bag
+  /ls [dir]          list sandbox files       /read <file>    read a sandbox file
+  /write <file>      write one (end with '.' line)
+  /stats [n]         recent stat history chart
+  /history [n]       recent sandbox writes    /undo [file]    revert a write
   /needle [on|off]   toggle the pre-filter    /doctor         run health checks
   /clear             clear screen + history   /quit | /q      exit (also Ctrl-D)
-Tip: Ctrl-C once cancels the current line, twice exits."""
+Tip: caring for the bot (feed/play/rest) earns treats; /treat spends one."""
 
 
 class _Quit(Exception):
@@ -127,9 +131,9 @@ class TerminalUI:
             ("Health", "health", st["health"]),
         ]
         header = (
-            f"{st['name']} the bot · mood: {mood} · age {st['age_days']}d"
+            f"{st['name']} the bot · mood: {mood} · age {st['age_days']}d · treats {st.get('treats', 0)}"
             if self.unicode
-            else f"{st['name']} the bot - mood: {mood} - age {st['age_days']}d"
+            else f"{st['name']} the bot - mood: {mood} - age {st['age_days']}d - treats {st.get('treats', 0)}"
         )
         print(self.pal.paint(f"  {header}", "bold"))
         for i, (label, kind, value) in enumerate(rows):
@@ -262,6 +266,62 @@ class TerminalUI:
         print(self.pal.paint("health checks:", "bold"))
         print_checks(checks, emit=print, unicode_ok=self.unicode)
 
+    # -- history / stats / undo ---------------------------------------------
+
+    _SPARK_GLYPHS = {"hunger": ("█", "#"), "happiness": ("+", "+"), "energy": ("e", "e"), "health": ("♥", "H")}
+
+    def _spark(self, value: float, key: str, width: int = 3) -> str:
+        glyph = self._SPARK_GLYPHS[key][0 if self.unicode else 1]
+        level = max(0, min(width, int(round(float(value) / 100.0 * width))))
+        return glyph * level + "·" * (width - level)
+
+    def _cmd_stats(self, arg: str) -> None:
+        self.store.tick()
+        limit = int(arg.strip()) if arg.strip().isdigit() else 40
+        samples = self.store.stats_history(max(1, limit))
+        if not samples:
+            self.store.record_sample()
+            self.store.save()
+            samples = self.store.stats_history(max(1, limit))
+        st = self.store.status()
+        print(self.pal.paint(
+            f"{st['name']} — last {len(samples)} samples · treats: {st.get('treats', 0)}", "bold"))
+        if not samples:
+            print(self.pal.paint("  (no samples yet — the chart fills in as you interact)", "dim"))
+            return
+        for key in ("hunger", "happiness", "energy", "health"):
+            bar = "".join(self._spark(sample[key], key) for sample in samples)
+            print(f"  {key:<9} {bar} {st[key]:>3}")
+        first, last = samples[0], samples[-1]
+        arrow = self.unicode and "→" or "->"
+        print(self.pal.paint(
+            f"  trend: hunger {first['hunger']:.0f}{arrow}{last['hunger']:.0f}  "
+            f"happiness {first['happiness']:.0f}{arrow}{last['happiness']:.0f}  "
+            f"energy {first['energy']:.0f}{arrow}{last['energy']:.0f}  "
+            f"health {first['health']:.0f}{arrow}{last['health']:.0f}", "dim"))
+
+    def _cmd_history(self, arg: str) -> None:
+        limit = int(arg.strip()) if arg.strip().isdigit() else 20
+        outcome = self.toolset.execute("file_history", {"limit": max(1, limit)})
+        if not outcome.get("ok"):
+            print(self.pal.paint(f"✖ file_history: {outcome.get('error', 'failed')}", "red"))
+            return
+        entries = outcome.get("entries", [])
+        if not entries:
+            print(self.pal.paint("no recorded writes yet", "dim"))
+            return
+        for entry in entries:
+            stamp = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(entry.get("t", 0)))
+            mark = "" if entry.get("undoable", True) else "  (not undoable)"
+            print(f"  {stamp}  {entry.get('action', 'write'):<9} "
+                  f"{entry.get('path')} ({entry.get('bytes', 0)} B){mark}")
+        if outcome.get("total", 0) > outcome.get("count", 0):
+            print(self.pal.paint(f"  ({outcome['count']} of {outcome['total']} recorded writes)", "dim"))
+
+    def _cmd_undo(self, arg: str) -> None:
+        path = arg.strip()
+        self._run_tool("undo_write", {"path": path} if path else {})
+
     # -- command loop --------------------------------------------------------
 
     def run(self) -> int:
@@ -310,6 +370,14 @@ class TerminalUI:
             self._run_tool("play_with_bot")
         elif cmd == "rest":
             self._run_tool("rest_bot")
+        elif cmd == "treat":
+            self._run_tool("give_treat")
+        elif cmd == "stats":
+            self._cmd_stats(arg)
+        elif cmd in ("history", "hist"):
+            self._cmd_history(arg)
+        elif cmd in ("undo", "revert"):
+            self._cmd_undo(arg)
         elif cmd in ("ls", "dir"):
             self._cmd_ls(arg)
         elif cmd in ("read", "cat"):

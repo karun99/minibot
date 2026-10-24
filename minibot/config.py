@@ -72,6 +72,8 @@ class BotConfig:
     max_file_bytes: int = 1_048_576
     max_tool_output_chars: int = 12_000
     history_user_turns: int = 8
+    journal_path: str = ""          # write journal for /history + /undo
+    journal_entries: int = 100      # how many writes to keep in the journal
     decay: DecayRates = field(default_factory=DecayRates)
     needle: NeedleConfig = field(default_factory=NeedleConfig)
     source: str = ""
@@ -220,7 +222,9 @@ def _finalize_paths(cfg: BotConfig) -> None:
         cfg.state_path = str(home / "state.json")
     if not cfg.log_path:
         cfg.log_path = str(home / "minibot.log")
-    for attr in ("sandbox_path", "state_path", "log_path"):
+    if not cfg.journal_path:
+        cfg.journal_path = str(home / "journal.jsonl")
+    for attr in ("sandbox_path", "state_path", "log_path", "journal_path"):
         value = os.path.expandvars(str(getattr(cfg, attr)))
         setattr(cfg, attr, str(Path(value).expanduser()))
     cfg.ollama_url = _normalize_url(cfg.ollama_url)
@@ -248,6 +252,8 @@ def _validate(cfg: BotConfig) -> None:
         bad("max_tool_output_chars must be >= 200")
     if cfg.history_user_turns < 1:
         bad("history_user_turns must be >= 1")
+    if cfg.journal_entries < 1:
+        bad("journal_entries must be >= 1")
     if cfg.needle.mode not in NEEDLE_MODES:
         bad(f"needle.mode must be one of {NEEDLE_MODES}")
     if not 0.0 <= cfg.needle.min_confidence <= 1.0:

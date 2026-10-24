@@ -11,3 +11,4 @@ config.json
 # local bot state / sandbox / logs
 .minibot/
 state.json
+.venv/

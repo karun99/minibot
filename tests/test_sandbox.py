@@ -155,9 +155,16 @@ def test_list_dir_on_file_rejected(sandbox):
 def test_write_is_audited(sandbox, caplog):
     import logging
 
+    # setup_logging() (exercised by earlier CLI tests) sets propagate=False on the
+    # "minibot" parent logger, which would keep these records from reaching caplog.
+    parent = logging.getLogger("minibot")
     with caplog.at_level(logging.INFO, logger="minibot.sandbox"):
-        sandbox.logger = logging.getLogger("minibot.sandbox")
-        sandbox.write_file("audit-me.txt", "12345")
+        previous, parent.propagate = parent.propagate, True
+        try:
+            sandbox.logger = logging.getLogger("minibot.sandbox")
+            sandbox.write_file("audit-me.txt", "12345")
+        finally:
+            parent.propagate = previous
     record = next(r for r in caplog.records if "file_write" in r.message)
     assert "path=audit-me.txt" in record.message
     assert "bytes=5" in record.message

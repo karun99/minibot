@@ -7,12 +7,15 @@ import logging
 import os
 import tempfile
 import time
-from dataclasses import asdict, dataclass, fields
+from dataclasses import asdict, dataclass, field, fields
 from pathlib import Path
 
 from .config import DecayRates
 
 log = logging.getLogger("minibot.state")
+
+MAX_TREATS = 20          # inventory cap — the bot can't hoard forever
+MAX_SAMPLES = 240        # stat history kept for /stats charts (~one per tick)
 
 
 def clamp(value: float) -> float:
@@ -23,6 +26,29 @@ class BotError(Exception):
     """A bot action cannot be performed right now."""
 
 
+def _clean_samples(raw) -> list:
+    """Keep only well-formed stat samples, newest MAX_SAMPLES of them."""
+    if not isinstance(raw, list):
+        return []
+    out = []
+    for item in raw[-MAX_SAMPLES:]:
+        if not isinstance(item, dict):
+            continue
+        try:
+            out.append(
+                {
+                    "t": float(item["t"]),
+                    "hunger": clamp(item["hunger"]),
+                    "happiness": clamp(item["happiness"]),
+                    "energy": clamp(item["energy"]),
+                    "health": clamp(item["health"]),
+                }
+            )
+        except (KeyError, TypeError, ValueError):
+            continue
+    return out
+
+
 @dataclass
 class BotState:
     name: str = "Pixel"
@@ -30,8 +56,10 @@ class BotState:
     happiness: float = 70.0
     energy: float = 80.0
     health: float = 100.0
+    treats: int = 0         # inventory: earned by using tools, spendable with /treat
     born_at: float = 0.0
     last_update: float = 0.0
+    samples: list = field(default_factory=list)  # recent stat samples for /stats
 
     @property
     def mood(self) -> str:
@@ -103,6 +131,11 @@ class BotStore:
                 setattr(state, attr, float(getattr(defaults, attr)))
         for attr in ("hunger", "happiness", "energy", "health"):
             setattr(state, attr, clamp(getattr(state, attr)))
+        try:
+            state.treats = max(0, int(raw.get("treats", 0)))
+        except (TypeError, ValueError):
+            state.treats = 0
+        state.samples = _clean_samples(raw.get("samples"))
         if state.born_at <= 0 or state.born_at > now + 60:
             state.born_at = now
         if state.last_update <= 0 or state.last_update > now + 60:
@@ -165,9 +198,48 @@ class BotStore:
             s.health = clamp(s.health - r.health_damage_per_hour * 0.5 * hours)
         elif s.hunger <= 60 and s.energy >= 30:
             s.health = clamp(s.health + r.health_regen_per_hour * hours)
+        # Mood-modulated drift (FR-1.3): neglect compounds the sadness, and a
+        # genuinely thriving bot cheers up on its own. Only kicks in at the
+        # extremes, so baseline rates stay exactly as configured.
+        extra_drain = 0.0
+        if s.hunger >= 85:
+            extra_drain += 4.0
+        if s.health < 40:
+            extra_drain += 3.0
+        if s.energy <= 0:
+            extra_drain += 2.0
+        if extra_drain:
+            s.happiness = clamp(s.happiness - extra_drain * hours)
+        if s.hunger <= 20 and s.energy >= 70 and s.health >= 60:
+            s.happiness = clamp(s.happiness + 3.0 * hours)
         s.last_update = now
+        self.record_sample(now)
         self._write(s)
         return s
+
+    def record_sample(self, now: float | None = None) -> dict:
+        """Append a stat sample for the /stats history chart."""
+        now = time.time() if now is None else now
+        s = self.state
+        sample = {
+            "t": float(now),
+            "hunger": round(s.hunger, 2),
+            "happiness": round(s.happiness, 2),
+            "energy": round(s.energy, 2),
+            "health": round(s.health, 2),
+        }
+        s.samples.append(sample)
+        if len(s.samples) > MAX_SAMPLES:
+            del s.samples[: len(s.samples) - MAX_SAMPLES]
+        return sample
+
+    def stats_history(self, limit: int = 40) -> list[dict]:
+        """Most recent stat samples, oldest first (for charting)."""
+        try:
+            limit = max(1, int(limit))
+        except (TypeError, ValueError):
+            limit = 40
+        return list(self.state.samples[-limit:])
 
     # -- actions -------------------------------------------------------------
 
@@ -179,6 +251,7 @@ class BotStore:
         s.happiness = clamp(s.happiness + 4)
         if s.hunger <= 60:
             s.health = clamp(s.health + 3)
+        self.award(1)
         self.save()
         return {
             "ok": True,
@@ -198,6 +271,7 @@ class BotStore:
         s.happiness = clamp(s.happiness + 20)
         s.energy = clamp(s.energy - 15)
         s.hunger = clamp(s.hunger + 4)
+        self.award(2)
         self.save()
         return {
             "ok": True,
@@ -217,11 +291,44 @@ class BotStore:
         s.hunger = clamp(s.hunger + 3)
         if s.hunger <= 60:
             s.health = clamp(s.health + 2)
+        self.award(1)
         self.save()
         return {
             "ok": True,
             "action": "rest_bot",
             "message": f"{s.name} recharged — energy {before} → {int(round(s.energy))}.",
+            "status": self.status(),
+        }
+
+    # -- inventory -----------------------------------------------------------
+
+    def award(self, treats: int = 1) -> int:
+        """Earn treats by caring for the bot (capped at MAX_TREATS)."""
+        s = self.state
+        s.treats = max(0, min(MAX_TREATS, int(s.treats) + int(treats)))
+        return s.treats
+
+    def give_treat(self) -> dict:
+        """Spend one treat: a small happiness/health/energy bump."""
+        self.tick()
+        s = self.state
+        if s.treats <= 0:
+            raise BotError(
+                f"no treats left — care for {s.name} (feed/play/rest) to earn some."
+            )
+        s.treats -= 1
+        before = int(round(s.happiness))
+        s.happiness = clamp(s.happiness + 12)
+        s.health = clamp(s.health + 5)
+        s.energy = clamp(s.energy + 3)
+        self.save()
+        return {
+            "ok": True,
+            "action": "give_treat",
+            "message": (
+                f"{s.name} loved the treat — happiness {before} → "
+                f"{int(round(s.happiness))} ({s.treats} left)."
+            ),
             "status": self.status(),
         }
 
@@ -235,4 +342,5 @@ class BotStore:
             "happiness": int(round(s.happiness)),
             "energy": int(round(s.energy)),
             "health": int(round(s.health)),
+            "treats": int(s.treats),
         }

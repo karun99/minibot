@@ -9,6 +9,7 @@ def test_schema_shape(toolset):
     assert names == {
         "feed_bot", "play_with_bot", "rest_bot", "get_bot_status",
         "read_file", "write_file", "list_dir",
+        "give_treat", "file_history", "undo_write",
     }
     for schema in schemas:
         assert schema["type"] == "function"
@@ -36,7 +37,9 @@ def test_feed_tool_changes_state(toolset, store):
 def test_status_tool(toolset):
     outcome = toolset.execute("get_bot_status", {})
     assert outcome["ok"] is True
-    assert set(outcome["status"]) == {"name", "mood", "age_days", "hunger", "happiness", "energy", "health"}
+    assert set(outcome["status"]) == {
+        "name", "mood", "age_days", "hunger", "happiness", "energy", "health", "treats",
+    }
 
 
 def test_play_when_exhausted_returns_error(toolset, store):

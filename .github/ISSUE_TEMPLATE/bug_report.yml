@@ -1,0 +1,55 @@
+name: Bug report
+description: Something in minibot misbehaves
+title: "[bug] "
+labels: ["bug"]
+body:
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened?
+      description: The behaviour you saw, and what you expected instead.
+      placeholder: "`minibot undo a.txt` printed 'nothing to undo' right after writing the file."
+    validations:
+      required: true
+  - type: textarea
+    id: reproduce
+    attributes:
+      label: How to reproduce
+      description: Exact commands, in order. Include config keys if relevant (no secrets).
+      placeholder: |
+        1. `echo hello | minibot write a.txt`
+        2. `minibot undo a.txt`
+    validations:
+      required: true
+  - type: textarea
+    id: doctor-output
+    attributes:
+      label: `minibot doctor` output
+      render: shell
+  - type: textarea
+    id: logs
+    attributes:
+      label: Relevant log lines
+      description: From `~/.minibot/minibot.log` (trim to the failing moment).
+      render: text
+  - type: input
+    id: version
+    attributes:
+      label: `minibot --version`
+    validations:
+      required: true
+  - type: input
+    id: environment
+    attributes:
+      label: Environment
+      placeholder: "Termux on Android 14 / Ubuntu 24.04 / macOS 15 / Windows 11 — Python 3.12"
+    validations:
+      required: true
+  - type: dropdown
+    id: ollama
+    attributes:
+      label: Does it involve a live model call?
+      options:
+        - "No — offline commands only (/commands, history, undo, stats)"
+        - "Yes — with Ollama running"
+        - "Not sure"

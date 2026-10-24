@@ -1,0 +1,28 @@
+name: Feature request
+description: Propose an improvement or a new tool
+title: "[feat] "
+labels: ["enhancement"]
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: What problem does this solve?
+      description: The user need, not the implementation.
+      placeholder: "I can't tell whether the bot is improving over days — /stats only shows the recent window."
+    validations:
+      required: true
+  - type: textarea
+    id: idea
+    attributes:
+      label: Proposed behaviour
+      description: What it does and how you'd trigger it (chat, slash command, CLI, MCP tool).
+    validations:
+      required: true
+  - type: checkboxes
+    id: constraints
+    attributes:
+      label: Ground rules check
+      options:
+        - label: This keeps minibot dependency-free at runtime (stdlib only)
+        - label: This does not weaken the sandbox containment rules
+        - label: I'm willing to open a PR (or just exploring the idea)

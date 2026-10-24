@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import json
 import sys
+import time
 
 from . import __version__
 from .checks import collect_checks, print_checks
@@ -49,6 +50,15 @@ def build_parser() -> argparse.ArgumentParser:
     chat_p = sub.add_parser("chat", help="one-shot chat turn (scriptable)")
     chat_p.add_argument("message", nargs="+")
     sub.add_parser("doctor", help="run environment health checks")
+    sub.add_parser("treat", help="give the bot a treat from the inventory")
+    stats_p = sub.add_parser("stats", help="show the recent stat history chart")
+    stats_p.add_argument("--json", action="store_true", help="machine-readable output")
+    stats_p.add_argument("--points", type=int, default=40, help="how many samples to chart")
+    hist_p = sub.add_parser("history", help="list recent sandbox file writes")
+    hist_p.add_argument("--limit", type=int, default=20)
+    undo_p = sub.add_parser("undo", help="revert a sandbox file write")
+    undo_p.add_argument("path", nargs="?", help="file to revert (default: last write)")
+    sub.add_parser("mcp", help="serve the bot tools over stdio as an MCP server")
     return parser
 
 
@@ -61,11 +71,22 @@ def _overrides(args: argparse.Namespace) -> dict:
     }
 
 
+def _sandbox(config: BotConfig) -> Sandbox:
+    """Sandbox with the write journal attached (enables /history and /undo)."""
+    return Sandbox(
+        config.sandbox_path,
+        max_file_bytes=config.max_file_bytes,
+        journal_path=config.journal_path,
+        max_journal_entries=config.journal_entries,
+    )
+
+
 def _build_stack(config: BotConfig):
     """Construct the standard object graph (store, sandbox, tools, client, ...)."""
     logger = setup_logging(config.log_path)
     store = BotStore(config.state_path, config.decay, default_name=config.bot_name)
-    sandbox = Sandbox(config.sandbox_path, max_file_bytes=config.max_file_bytes, logger=logger)
+    sandbox = _sandbox(config)
+    sandbox.logger = logger
     toolset = build_toolset(store, sandbox, logger)
     client = OllamaClient(
         config.ollama_url, config.model,
@@ -128,7 +149,7 @@ def cmd_simple_action(config: BotConfig, action: str) -> int:
 
 
 def cmd_ls(config: BotConfig, path: str) -> int:
-    sandbox = Sandbox(config.sandbox_path, max_file_bytes=config.max_file_bytes)
+    sandbox = _sandbox(config)
     outcome = sandbox.list_dir(path)
     for entry in outcome["entries"]:
         # dir names already carry a trailing "/" from list_dir
@@ -140,7 +161,7 @@ def cmd_ls(config: BotConfig, path: str) -> int:
 
 
 def cmd_read(config: BotConfig, path: str) -> int:
-    sandbox = Sandbox(config.sandbox_path, max_file_bytes=config.max_file_bytes)
+    sandbox = _sandbox(config)
     outcome = sandbox.read_file(path)
     sys.stdout.write(outcome["content"])
     if outcome["content"] and not outcome["content"].endswith("\n"):
@@ -149,11 +170,93 @@ def cmd_read(config: BotConfig, path: str) -> int:
 
 
 def cmd_write(config: BotConfig, path: str) -> int:
-    sandbox = Sandbox(config.sandbox_path, max_file_bytes=config.max_file_bytes)
+    sandbox = _sandbox(config)
     content = sys.stdin.read()
     outcome = sandbox.write_file(path, content)
     print(outcome["message"])
     return 0
+
+
+def cmd_treat(config: BotConfig) -> int:
+    store = BotStore(config.state_path, config.decay, default_name=config.bot_name)
+    outcome = store.give_treat()
+    print(outcome["message"])
+    return 0
+
+
+def cmd_stats(config: BotConfig, as_json: bool, points: int) -> int:
+    store = BotStore(config.state_path, config.decay, default_name=config.bot_name)
+    store.tick()
+    samples = store.stats_history(points)
+    if not samples:  # brand-new bot: capture the current reading so the chart isn't empty
+        store.record_sample()
+        store.save()
+        samples = store.stats_history(points)
+    if as_json:
+        print(json.dumps({"name": store.state.name, "samples": samples}, indent=2))
+        return 0
+    _print_stats_chart(store.state.name, samples, store.status())
+    return 0
+
+
+def _print_stats_chart(name: str, samples: list[dict], status: dict) -> None:
+    print(f"{name} — last {len(samples)} samples")
+    print(f"  treats in the bag: {status.get('treats', 0)}")
+    if not samples:
+        print("  (no samples recorded yet — the chart fills in as you interact)")
+        return
+    width = 40
+    series = [("hunger", "H"), ("happiness", "+"), ("energy", "E"), ("health", "♥")]
+    for key, symbol in series:
+        if samples[-1][key] >= 99.5:
+            glyph = "█"
+        elif samples[-1][key] <= 0.5:
+            glyph = "·"
+        else:
+            glyph = symbol
+        blocks = " ".join(_spark(sample[key], width, glyph) for sample in samples[-width:])
+        print(f"  {key:<9} {blocks}  {status[key]:>3}")
+    first, last = samples[0], samples[-1]
+    print(f"  trend: hunger {first['hunger']:.0f}→{last['hunger']:.0f}  "
+          f"happiness {first['happiness']:.0f}→{last['happiness']:.0f}  "
+          f"energy {first['energy']:.0f}→{last['energy']:.0f}  "
+          f"health {first['health']:.0f}→{last['health']:.0f}")
+
+
+def _spark(value: float, width: int, glyph: str) -> str:
+    height = 6
+    level = max(0, min(height, int(round(float(value) / 100.0 * height))))
+    return glyph * level + "·" * (height - level)
+
+
+def cmd_history(config: BotConfig, limit: int) -> int:
+    sandbox = _sandbox(config)
+    outcome = sandbox.history(limit)
+    if not outcome["entries"]:
+        print("no recorded writes yet")
+        return 0
+    for entry in outcome["entries"]:
+        stamp = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(entry.get("t", 0)))
+        undoable = "" if entry.get("undoable", True) else "  (not undoable)"
+        print(f"{stamp}  {entry.get('action', 'write'):<9} {entry.get('path')} "
+              f"({entry.get('bytes', 0)} B){undoable}")
+    print(f"({outcome['count']} of {outcome['total']} recorded writes)")
+    return 0
+
+
+def cmd_undo(config: BotConfig, path: str | None) -> int:
+    sandbox = _sandbox(config)
+    outcome = sandbox.undo(path or None)
+    print(outcome["message"])
+    return 0
+
+
+def cmd_mcp(config: BotConfig) -> int:
+    from .mcp_server import MCPServer
+
+    _, _, toolset, _, _, _, logger = _build_stack(config)
+    server = MCPServer(toolset, logger=logger)
+    return server.serve(sys.stdin, sys.stdout)
 
 
 def cmd_chat(config: BotConfig, message: str) -> int:
@@ -167,7 +270,7 @@ def cmd_chat(config: BotConfig, message: str) -> int:
 
 def cmd_doctor(config: BotConfig) -> int:
     store = BotStore(config.state_path, config.decay, default_name=config.bot_name)
-    sandbox = Sandbox(config.sandbox_path, max_file_bytes=config.max_file_bytes)
+    sandbox = _sandbox(config)
     client = OllamaClient(
         config.ollama_url, config.model,
         timeout=config.request_timeout_s, ping_timeout=config.ping_timeout_s,
@@ -208,6 +311,16 @@ def main(argv: list[str] | None = None) -> int:
             return cmd_chat(config, " ".join(args.message))
         if command == "doctor":
             return cmd_doctor(config)
+        if command == "treat":
+            return cmd_treat(config)
+        if command == "stats":
+            return cmd_stats(config, args.json, args.points)
+        if command == "history":
+            return cmd_history(config, args.limit)
+        if command == "undo":
+            return cmd_undo(config, args.path)
+        if command == "mcp":
+            return cmd_mcp(config)
     except (SandboxError, BotError, ToolError) as e:
         print(f"error: {e}", file=sys.stderr)
         return 1

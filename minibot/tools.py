@@ -187,4 +187,43 @@ def build_toolset(store: BotStore, sandbox: Sandbox, logger: logging.Logger | No
         },
         lambda args: sandbox.list_dir(args.get("path") or "."),
     )
+    ts.register(
+        "give_treat",
+        f"Give {name} a treat from the inventory. Costs one treat (earned by feeding, playing "
+        "and resting); boosts happiness, health and energy a little.",
+        _noargs(),
+        lambda args: store.give_treat(),
+    )
+    ts.register(
+        "file_history",
+        "List recent sandbox file writes (who wrote what, and when). Use before undoing a "
+        "write you did not intend to make.",
+        {
+            "type": "object",
+            "properties": {
+                "limit": {
+                    "type": "integer",
+                    "description": "How many recent writes to return (default 20)",
+                }
+            },
+            "required": [],
+        },
+        lambda args: sandbox.history(args.get("limit") or 20),
+    )
+    ts.register(
+        "undo_write",
+        "Undo a sandbox file write: restores the previous contents, or deletes the file if the "
+        "write created it. Without 'path' undoes the most recent write.",
+        {
+            "type": "object",
+            "properties": {
+                "path": {
+                    "type": "string",
+                    "description": "File to revert (relative to the sandbox root); omit for the last write",
+                }
+            },
+            "required": [],
+        },
+        lambda args: sandbox.undo(args.get("path") or None),
+    )
     return ts

@@ -133,3 +133,75 @@ class _FakeStdin:
 
     def read(self) -> str:
         return self._data
+
+    def __iter__(self):
+        return iter(self._data.splitlines(keepends=True))
+
+
+def test_treat_command_spends_one(cli, capsys):
+    assert main(cli + ["feed"]) == 0
+    capsys.readouterr()
+    assert main(cli + ["treat"]) == 0
+    assert "treat" in capsys.readouterr().out.lower()
+    assert _store(cli).state.treats == 0
+
+
+def test_treat_without_inventory_errors(cli, capsys):
+    rc = main(cli + ["treat"])
+    assert rc == 1
+    assert "no treats" in capsys.readouterr().err
+
+
+def test_stats_json_records_a_sample(cli, capsys):
+    assert main(cli + ["stats", "--json"]) == 0
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["samples"], "stats must never show an empty chart on a fresh bot"
+    assert {"t", "hunger", "happiness", "energy", "health"} <= set(payload["samples"][-1])
+
+
+def test_stats_chart_prints_series(cli, capsys):
+    assert main(cli + ["stats"]) == 0
+    out = capsys.readouterr().out
+    assert "hunger" in out
+    assert "treats" in out
+
+
+def test_history_and_undo_roundtrip(cli, capsys, monkeypatch):
+    monkeypatch.setattr("sys.stdin", _FakeStdin("v1\n"))
+    assert main(cli + ["write", "a.txt"]) == 0
+    monkeypatch.setattr("sys.stdin", _FakeStdin("v2\n"))
+    assert main(cli + ["write", "a.txt"]) == 0
+    capsys.readouterr()
+
+    assert main(cli + ["history"]) == 0
+    assert "a.txt" in capsys.readouterr().out
+
+    assert main(cli + ["undo", "a.txt"]) == 0
+    assert "restored" in capsys.readouterr().out
+
+    assert main(cli + ["read", "a.txt"]) == 0
+    assert capsys.readouterr().out == "v1\n"
+
+    # the overwritten entry was consumed; the original create entry remains
+    assert main(cli + ["history"]) == 0
+    out = capsys.readouterr().out
+    assert "create" in out
+    assert "(1 of 1 recorded writes)" in out
+
+
+def test_undo_without_history_errors(cli, capsys):
+    rc = main(cli + ["undo"])
+    assert rc == 1
+    assert "nothing to undo" in capsys.readouterr().err
+
+
+def test_mcp_serve_over_piped_stdio(cli, capsys, monkeypatch):
+    requests = (
+        json.dumps({"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {}}) + "\n"
+        + json.dumps({"jsonrpc": "2.0", "id": 2, "method": "tools/list"}) + "\n"
+    )
+    monkeypatch.setattr("sys.stdin", _FakeStdin(requests))
+    assert main(cli + ["mcp"]) == 0
+    lines = [json.loads(line) for line in capsys.readouterr().out.splitlines()]
+    assert lines[0]["result"]["serverInfo"]["name"] == "minibot"
+    assert any(tool["name"] == "feed_bot" for tool in lines[1]["result"]["tools"])

@@ -1,5 +1,9 @@
 # minibot
 
+[![CI](https://github.com/karun99/minibot/actions/workflows/ci.yml/badge.svg)](https://github.com/karun99/minibot/actions/workflows/ci.yml)
+[![Python 3.10+](https://img.shields.io/badge/python-3.10%2B-blue.svg)](https://www.python.org/downloads/)
+[![License: MIT](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
+
 A locally-hosted **bot for your terminal**, powered by [Ollama](https://ollama.com)
 tool calling. Type natural language — the model picks tools, your bot eats,
 plays, recharges, and can **read/write code files** in a restricted sandbox.
@@ -63,9 +67,15 @@ minibot run           # interactive terminal bot
 Then chat, or use direct commands (they work even with Ollama stopped):
 
 ```
-/feed  /play  /rest  /status  /ls  /read notes.md  /write notes.md
+/feed  /play  /rest  /treat  /status  /stats
+/ls  /read notes.md  /write notes.md  /history  /undo notes.md
 /needle on   /doctor   /clear   /help   /quit
 ```
+
+Caring for the bot earns **treats** (feed and rest earn 1, play earns 2, capped
+at 20); `/treat` spends one for a small happiness/health/energy boost.
+`/stats` charts the recent stat history, `/history` lists recent sandbox
+writes and `/undo [file]` reverts one.
 
 Type `minibot run --offline` to start anyway when Ollama is down
 (direct `/commands` only).
@@ -76,11 +86,38 @@ Type `minibot run --offline` to start anyway when Ollama is down
 minibot status            # human readable
 minibot status --json     # machine readable
 minibot feed              # feed once
+minibot treat             # spend a treat
+minibot stats --points 20 # recent stat chart (also --json)
 minibot ls src/
 minibot read src/app.py
 echo "print('hi')" | minibot write hello.py
+minibot history           # recent sandbox writes
+minibot undo src/app.py   # restore the previous version
 minibot chat "read hello.py and tell me what it does"
 ```
+
+## Use it from any MCP client
+
+`minibot mcp` serves the bot's tools over stdio using the
+[Model Context Protocol](https://modelcontextprotocol.io), so Claude Desktop,
+Cursor, OpenCode or any other MCP client can feed your bot, read and write
+sandbox files, and undo writes:
+
+```json
+{
+  "mcpServers": {
+    "minibot": {
+      "command": "minibot",
+      "args": ["mcp"]
+    }
+  }
+}
+```
+
+Exposed tools: `feed_bot`, `play_with_bot`, `rest_bot`, `give_treat`,
+`get_bot_status`, `read_file`, `write_file`, `list_dir`, `file_history`,
+`undo_write`. The same sandbox rules apply — a client outside your machine
+still cannot escape the sandbox directory.
 
 ## Configuration
 
@@ -100,6 +137,8 @@ Copy `config.example.json` to `config.json` and edit. Every key is optional:
 | `log_path` | `~/.minibot/minibot.log` | rotating log (tool calls + file writes) |
 | `max_iterations` | `5` | tool-loop cap per user message |
 | `max_file_bytes` | `1048576` | read/write size limit (1 MB) |
+| `journal_path` | `~/.minibot/journal.jsonl` | write journal backing `/history` and `/undo` |
+| `journal_entries` | `100` | how many writes the journal keeps |
 | `needle.enabled` | `false` | intent pre-filter on/off |
 | `needle.mode` | `heuristic` | `heuristic` (zero-model) or `ollama` (tiny classifier model) |
 | `decay.*` | see example | stat drift per hour of real time |
@@ -134,10 +173,11 @@ pip install pytest
 pytest
 ```
 
-130+ tests: sandbox traversal attacks, state decay/persistence, tool schemas,
-the ReAct loop (malformed-JSON retry, max iterations, history trimming),
-Needle routing, the Ollama client against a local fake server, and CLI
-acceptance tests.
+180+ tests: sandbox traversal attacks, state decay/persistence, treat
+inventory, stat-history samples, the write journal (history/undo), tool
+schemas, the ReAct loop (malformed-JSON retry, max iterations, history
+trimming), Needle routing, the Ollama client against a local fake server,
+the MCP server over stdio, and CLI acceptance tests.
 
 ## Troubleshooting
 
@@ -161,11 +201,12 @@ minibot/
   ollama_client.py   stdlib HTTP client for /api/chat and /api/tags
   needle.py          optional intent pre-filter (heuristic | ollama)
   orchestrator.py    ReAct loop, malformed-retry, history trimming
+  mcp_server.py      stdio MCP server: expose the tools to other agents
   tui.py             terminal UI: sprite, bars, slash commands
-  cli.py             run/status/feed/play/rest/ls/read/write/chat/doctor
+  cli.py             run/status/feed/treat/stats/history/undo/chat/mcp/doctor
   checks.py          health checks shared by doctor and /doctor
 docs/SRS.md          the requirements this implements
-tests/               pytest suite
+tests/               pytest suite (run on a fast disk, not an SD card)
 ```
 
 ## License

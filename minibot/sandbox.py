@@ -6,7 +6,10 @@ root. Traversal, absolute escapes, null bytes and oversized files are refused.
 
 from __future__ import annotations
 
+import base64
+import json
 import logging
+import time
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -23,6 +26,8 @@ class Sandbox:
     max_file_bytes: int = 1_048_576
     max_list_entries: int = 500
     logger: logging.Logger | None = None
+    journal_path: Path | str | None = None      # enables /history + /undo
+    max_journal_entries: int = 100
 
     def __post_init__(self) -> None:
         self.root = Path(self.root).expanduser()
@@ -31,6 +36,8 @@ class Sandbox:
             self.root = self.root.resolve()
         except OSError as e:
             raise SandboxError(f"cannot create sandbox at {self.root}: {e}") from e
+        if self.journal_path:
+            self.journal_path = Path(self.journal_path).expanduser()
 
     # -- path safety ---------------------------------------------------------
 
@@ -107,14 +114,161 @@ class Sandbox:
         target = self.resolve(path)
         if target.exists() and target.is_dir():
             raise SandboxError(f"is a directory: {self.relpath(target)}")
+        existed = target.exists() and target.is_file()
+        prev_b64 = None
+        if existed:
+            try:
+                if target.stat().st_size <= self.max_file_bytes:
+                    prev_b64 = base64.b64encode(target.read_bytes()).decode("ascii")
+            except OSError:
+                prev_b64 = None
         try:
             target.parent.mkdir(parents=True, exist_ok=True)
             target.write_bytes(data)
         except OSError as e:
             raise SandboxError(f"cannot write {self.relpath(target)}: {e}") from e
         rel = self.relpath(target)
+        self._journal_append(
+            {
+                "t": time.time(),
+                "action": "overwrite" if existed else "create",
+                "path": rel,
+                "bytes": len(data),
+                "prev_b64": prev_b64,
+                "undoable": (prev_b64 is not None) or (not existed),
+            }
+        )
         self._log("info", f"file_write path={rel} bytes={len(data)}")  # FR-4.4 audit
         return {"ok": True, "path": rel, "size": len(data), "message": f"wrote {rel} ({len(data)} bytes)"}
+
+    # -- journal (history + undo) -------------------------------------------
+
+    def _journal_read(self) -> list[dict]:
+        if not self.journal_path:
+            return []
+        path = Path(self.journal_path)
+        if not path.exists():
+            return []
+        try:
+            raw = path.read_text(encoding="utf-8")
+        except OSError as e:
+            self._log("warning", f"journal unreadable: {e}")
+            return []
+        entries: list[dict] = []
+        for line in raw.splitlines():
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                item = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            if isinstance(item, dict) and item.get("path"):
+                entries.append(item)
+        return entries
+
+    def _journal_write(self, entries: list[dict]) -> None:
+        if not self.journal_path:
+            return
+        path = Path(self.journal_path)
+        try:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            tmp = path.with_name(path.name + ".tmp")
+            tmp.write_text(
+                "".join(json.dumps(e, separators=(",", ":")) + "\n" for e in entries),
+                encoding="utf-8",
+            )
+            tmp.replace(path)
+        except OSError as e:
+            self._log("warning", f"journal write failed: {e}")  # never break the write itself
+
+    def _journal_append(self, entry: dict) -> None:
+        if not self.journal_path:
+            return
+        entries = self._journal_read()
+        entries.append(entry)
+        overflow = len(entries) - max(1, self.max_journal_entries)
+        if overflow > 0:
+            del entries[:overflow]
+        self._journal_write(entries)
+
+    def history(self, limit: int = 20) -> dict:
+        """Recent sandbox writes, oldest first (contents stripped)."""
+        if not self.journal_path:
+            raise SandboxError("journal is disabled — no write history available")
+        try:
+            limit = max(1, int(limit))
+        except (TypeError, ValueError):
+            limit = 20
+        entries = self._journal_read()
+        recent = []
+        for item in entries[-limit:]:
+            slim = {k: v for k, v in item.items() if k != "prev_b64"}
+            if item.get("prev_b64"):
+                try:
+                    slim["prev_bytes"] = len(base64.b64decode(item["prev_b64"]))
+                except (ValueError, TypeError):
+                    slim["prev_bytes"] = -1
+            recent.append(slim)
+        return {"ok": True, "entries": recent, "count": len(recent), "total": len(entries)}
+
+    def undo(self, path: str | None = None) -> dict:
+        """Revert the most recent write (or the most recent write to `path`)."""
+        if not self.journal_path:
+            raise SandboxError("journal is disabled — undo is unavailable")
+        entries = self._journal_read()
+        if not entries:
+            raise SandboxError("nothing to undo")
+        if path:
+            wanted = self.relpath(self.resolve(path))
+            index = next(
+                (i for i in range(len(entries) - 1, -1, -1) if entries[i].get("path") == wanted),
+                None,
+            )
+            if index is None:
+                raise SandboxError(f"no journal entry for {wanted}")
+        else:
+            index = len(entries) - 1
+        entry = entries[index]
+        if not entry.get("undoable", True):
+            raise SandboxError(
+                f"cannot undo {entry['path']}: the previous version was not captured "
+                f"(file exceeded the {self.max_file_bytes} byte snapshot limit)"
+            )
+        target = self.resolve(entry["path"])
+        restored = entry.get("prev_b64")
+        if restored is not None:
+            try:
+                data = base64.b64decode(restored)
+            except (ValueError, TypeError) as e:
+                raise SandboxError(f"journal entry for {entry['path']} is corrupt: {e}") from e
+            try:
+                target.parent.mkdir(parents=True, exist_ok=True)
+                target.write_bytes(data)
+            except OSError as e:
+                raise SandboxError(f"cannot restore {entry['path']}: {e}") from e
+            outcome = {
+                "ok": True,
+                "path": entry["path"],
+                "restored_bytes": len(data),
+                "message": f"restored {entry['path']} ({len(data)} bytes)",
+            }
+        else:
+            try:
+                if target.exists():
+                    target.unlink()
+            except OSError as e:
+                raise SandboxError(f"cannot remove {entry['path']}: {e}") from e
+            outcome = {
+                "ok": True,
+                "path": entry["path"],
+                "deleted": True,
+                "message": f"removed {entry['path']} (it did not exist before this write)",
+            }
+        del entries[index]
+        self._journal_write(entries)
+        self._log("info", f"undo path={entry['path']}")
+        return outcome
 
     def list_dir(self, path: str = ".") -> dict:
         target = self.resolve(path)
