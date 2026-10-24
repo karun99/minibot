@@ -46,7 +46,7 @@ Verify: `curl http://127.0.0.1:11434/api/tags` should list your models.
 ## Install minibot
 
 ```bash
-git clone <this-repo> && cd <this-repo>
+git clone https://github.com/karun99/minibot.git && cd minibot
 pip install .          # installs the `minibot` command
 # — or run without installing:  python -m minibot
 ```
@@ -170,4 +170,4 @@ tests/               pytest suite
 
 ## License
 
-MIT
+MIT — see [LICENSE](LICENSE).
