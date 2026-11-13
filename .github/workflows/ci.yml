@@ -56,3 +56,18 @@ jobs:
           printf '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}\n{"jsonrpc":"2.0","id":2,"method":"tools/list"}\n' \
             | minibot mcp | grep -q '"feed_bot"'
           echo "smoke ok"
+
+  packaging:
+    name: Lockfile, installer and image
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: false
+      - name: Lockfile is current
+        run: uv lock --check
+      - name: Installer parses
+        run: sh -n scripts/install.sh
+      - name: Container image builds
+        run: docker build -t minibot:ci .

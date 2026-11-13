@@ -57,6 +57,18 @@ pip install .          # installs the `minibot` command
 
 No `pip install` step needed beyond that — there are no runtime dependencies.
 
+For an isolated install that does not touch the system Python:
+
+```bash
+./scripts/install.sh                       # Linux, macOS, Termux
+.\scripts\install.ps1                      # Windows (PowerShell)
+```
+
+Both create a virtual environment under `~/.local/share/minibot` (or
+`%LOCALAPPDATA%\minibot`), install this checkout into it, and print the PATH
+line to add. Contributors who use [uv](https://docs.astral.sh/uv/) can run
+`uv sync` instead; `uv.lock` pins the development environment.
+
 ## Quick start
 
 ```bash

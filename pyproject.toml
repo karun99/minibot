@@ -14,6 +14,11 @@ dependencies = []
 [project.optional-dependencies]
 dev = ["pytest>=7"]
 
+[dependency-groups]
+# PEP 735 group: `uv sync` installs this; the extra above keeps
+# `pip install -e .[dev]` working for contributors who do not use uv.
+dev = ["pytest>=7"]
+
 [project.scripts]
 minibot = "minibot.cli:main"
 
